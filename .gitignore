@@ -1,0 +1,10 @@
+# Ambiente Virtual
+venv/
+__pycache__/
+
+# Ficheiros de Áudio Temporários
+*.mp3
+*.wav
+
+# Ficheiros de Memória Pessoal (opcional, caso não queiras subir no GitHub público)
+# memory.json
