@@ -6,6 +6,7 @@ import numpy as np
 import speech_recognition as sr
 import io
 import wave
+import time
 from brain import JarvisBrain
 
 ctk.set_appearance_mode("dark")
@@ -166,7 +167,8 @@ class JarvisGUI(ctk.CTk):
         )
 
     def _initial_greeting(self):
-        greeting = self.jarvis.get_random_greeting()
+        self.set_state("thinking", "A GERAR DIAGNÓSTICO...")
+        greeting = self.jarvis.generate_contextual_greeting()
         self.set_state("speaking", "A FALAR...")
         self.jarvis.speak(greeting)
         self.set_state("ready", "SISTEMA ONLINE")
@@ -177,19 +179,54 @@ class JarvisGUI(ctk.CTk):
         threading.Thread(target=self._capture_audio_thread, daemon=True).start()
 
     def _capture_audio_thread(self):
-        self.set_state("listening", "A OUVIR (5 SEG)...")
+        self.set_state("listening", "A OUVIR...")
         
         sample_rate = 16000
-        duration = 5  # Grava blocos de 5 segundos
+        chunk_duration = 0.1  # Bloco de 100ms
+        chunk_samples = int(sample_rate * chunk_duration)
         
+        silence_threshold = 500   # Sensibilidade ao volume da voz
+        silence_limit = 1.2       # Segundos de silêncio para encerrar a frase automaticamente
+        max_duration = 15         # Limite máximo total de fala
+        
+        recorded_chunks = []
+        has_spoken = False
+        silence_start = None
+        start_time = time.time()
+
         try:
-            # Grava áudio do microfone via sounddevice
-            audio_data = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
-            sd.wait()
-            
+            with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16') as stream:
+                while True:
+                    data, _ = stream.read(chunk_samples)
+                    recorded_chunks.append(data.copy())
+                    
+                    # Calcula o volume do áudio capturado
+                    volume = np.abs(data).mean()
+                    
+                    if volume > silence_threshold:
+                        has_spoken = True
+                        silence_start = None  # Reseta o contador de silêncio se estiver a falar
+                    elif has_spoken:
+                        if silence_start is None:
+                            silence_start = time.time()
+                        elif time.time() - silence_start >= silence_limit:
+                            # Pausa detetada após a fala: encerra a gravação de forma limpa
+                            break
+
+                    # Limite de tempo máximo de segurança
+                    if time.time() - start_time > max_duration:
+                        break
+
+            if not has_spoken or len(recorded_chunks) == 0:
+                self.set_state("speaking", "NENHUMA FALA DETETADA")
+                self.jarvis.speak("Não ouvi nenhuma instrução, Sr. Parker.")
+                self.set_state("ready", "SISTEMA ONLINE")
+                return
+
             self.set_state("thinking", "A TRANSCREVER...")
 
-            # Converte os dados gravados num ficheiro de memória WAV
+            audio_data = np.concatenate(recorded_chunks, axis=0)
+
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, 'wb') as wf:
                 wf.setnchannels(1)
@@ -199,20 +236,19 @@ class JarvisGUI(ctk.CTk):
             
             wav_buffer.seek(0)
 
-            # Envia para transcrição
             with sr.AudioFile(wav_buffer) as source:
                 audio_file = self.recognizer.record(source)
                 text = self.recognizer.recognize_google(audio_file, language="pt-PT")
                 print(f"[Voz Capturada]: {text}")
                 
                 self._process_response(text)
-                
+
         except sr.UnknownValueError:
             self.set_state("speaking", "ÁUDIO NÃO RECONHECIDO")
             self.jarvis.speak("Não consegui compreender o áudio, Sr. Parker.")
             self.set_state("ready", "SISTEMA ONLINE")
         except Exception as e:
-            print(f"[Erro de gravação: {e}]")
+            print(f"[Erro na captura de voz: {e}]")
             self.set_state("ready", "SISTEMA ONLINE")
 
     def send_text_message(self):

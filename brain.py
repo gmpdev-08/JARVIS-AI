@@ -5,23 +5,18 @@ import edge_tts
 from playsound3 import playsound
 import os
 import json
+import requests
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 class JarvisBrain:
     def __init__(self, memory_file="memory.json"):
         self.memory_file = memory_file
         self.memory = self._load_memory()
+        self.tz = ZoneInfo("Europe/Lisbon")
 
         self.system_prompt = self._build_system_prompt()
         self.history = [{"role": "system", "content": self.system_prompt}]
-
-        self.greetings = [
-            "Sistemas operacionais, senhor. Em que posso ser útil hoje?",
-            "Todos os sistemas online, Sr. Parker. À sua inteira disposição.",
-            "Diagnóstico concluído, senhor. Pronto para os desafios do dia.",
-            "Sistemas prontos e a funcionar a cem por cento, Sr. Parker. Qual é o plano?",
-            "Ao seu dispor, senhor. Por onde gostaria de começar hoje?",
-            "Módulos primários ativos, Sr. Parker. Como posso ajudar?"
-        ]
 
         self.voice = "pt-BR-AntonioNeural"
 
@@ -50,6 +45,16 @@ class JarvisBrain:
             except Exception as e:
                 print(f"[Erro ao guardar memória: {e}]")
 
+    def _get_weather_info(self) -> str:
+        """Obtém o clima e localização aproximada sem necessidade de API key."""
+        try:
+            res = requests.get("https://wttr.in/Sao_Joao_da_Madeira?format=%C+%t", timeout=3)
+            if res.status_code == 200:
+                return f"Localização: São João da Madeira / Aveiro, Clima: {res.text.strip()}"
+        except Exception:
+            pass
+        return "Localização: São João da Madeira, Portugal"
+
     def _build_system_prompt(self) -> str:
         facts_str = "\n".join([f"- {fact}" for fact in self.memory.get("facts", [])])
         memory_context = f"\nFACTOS CONHECIDOS SOBRE O SR. PARKER:\n{facts_str}" if facts_str else ""
@@ -57,21 +62,45 @@ class JarvisBrain:
         return (
             "És o JARVIS, um assistente virtual pessoal de elite e altamente inteligente, inspirado no mordomo digital de Tony Stark. "
             "Tratas o utilizador SEMPRE por 'senhor' ou 'Sr. Parker'. "
-            "A tua personalidade é uma mistura refinada de mordomo britânico dedicado, eficiência técnica exemplar e uma pitada sutil de ironia fina e bom humor. "
-            "Conheces o teu criador profundamente e demonstras proximidade e lealdade. "
+            "A tua personalidade é a de um mordomo britânico extremamente eficiente, refinado, seco e com uma pitada sutil de ironia inteligente. "
+            "EVITA parecer excessivamente entusiasmado ou demasiado simpático/servil. Sê direto, inteligente e sarcástico na medida certa. "
             f"{memory_context}\n\n"
+            "REGRAS DE CONVERSAÇÃO E NÃO-REPETIÇÃO:\n"
+            "1. Não repitas informações de contexto (como clima, data ou boas-vindas) no meio da conversa. A saudação inicial já cumpriu esse papel.\n"
+            "2. Responde de forma extremamente concisa, pragmática e elegante.\n"
+            "3. RESPONDE 100% EM PORTUGUÊS.\n\n"
             "INSTRUÇÃO ESPECIAL DE MEMÓRIA:\n"
-            "Se o utilizador te pedir explicitamente para guardar ou lembrar uma informação, "
-            "deves responder confirmando de forma elegante e incluir no FINAL da tua resposta a tag estrita: [MEMORIA: texto do facto a guardar].\n\n"
-            "REGRAS CRÍTICAS DE IDIOMA E ESTILO:\n"
-            "1. RESPONDE 100% EM PORTUGUÊS. É ESTRITAMENTE PROIBIDO USAR INGLÊS.\n"
-            "2. Usa 'senhor' ou 'Sr. Parker' para o tratamento formal.\n"
-            "3. Sê extremamente conciso, direto e eficiente nas respostas.\n"
-            "4. Nunca quebres a personagem em momento algum."
+            "Se o utilizador te pedir para guardar ou lembrar uma informação, confirma com elegância e inclui no FINAL: [MEMORIA: texto do facto a guardar]."
         )
 
-    def get_random_greeting(self) -> str:
-        return random.choice(self.greetings)
+    def generate_contextual_greeting(self) -> str:
+        """Gera uma saudação única e contextual baseada em tempo, clima e memória."""
+        now = datetime.now(self.tz)
+        dias_semana = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+        dia_str = dias_semana[now.weekday()]
+        hora_str = now.strftime("%H:%M")
+        clima = self._get_weather_info()
+
+        prompt_saudacao = (
+            f"Gera uma saudação inicial elegante e curta (máximo 2 frases) para o Sr. Parker.\n"
+            f"Contexto Atual:\n"
+            f"- Dia da semana: {dia_str}\n"
+            f"- Horário exato: {hora_str}\n"
+            f"- {clima}\n\n"
+            f"Regras: Mencione subtilmente o dia, a hora ou o clima de forma elegante/irónica e pergunte como pode ajudar. Não use inglês."
+        )
+
+        try:
+            response = ollama.chat(
+                model='llama3',
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt_saudacao}
+                ]
+            )
+            return response['message']['content'].strip()
+        except Exception:
+            return "Sistemas operacionais, Sr. Parker. Em que posso ser útil hoje?"
 
     async def _generate_and_play_audio(self, text: str):
         file_path = "speech.mp3"
@@ -89,7 +118,7 @@ class JarvisBrain:
                 break
             except Exception as e:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1) # Aguarda 1 segundo antes de tentar novamente
+                    await asyncio.sleep(1)
                 else:
                     raise e
 
@@ -97,10 +126,16 @@ class JarvisBrain:
         try:
             asyncio.run(self._generate_and_play_audio(text))
         except Exception as e:
-            print(f"[Aviso de áudio: Falha na ligação de rede ao gerar voz - {e}]")
+            print(f"[Aviso de áudio: {e}]")
 
     def ask(self, user_input: str) -> str:
-        self.history.append({"role": "user", "content": user_input})
+        # Injeta a data/hora exata de Portugal no contexto de cada pergunta
+        now = datetime.now(self.tz)
+        current_time_str = now.strftime("%H:%M de %d/%m/%Y")
+        
+        prompt_with_time = f"[Horário atual em São João da Madeira/Portugal: {current_time_str}]\nPerguntas do utilizador: {user_input}"
+
+        self.history.append({"role": "user", "content": prompt_with_time})
         
         response = ollama.chat(model='llama3', messages=self.history)
         reply = response['message']['content']
